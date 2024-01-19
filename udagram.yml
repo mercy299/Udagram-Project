@@ -1,7 +1,6 @@
 Description: CD12352 - Infrastructure as Code Project - Udagram
 
 Parameters:
-
   EnvironmentName:
     Description: An environment name that will be prefixed to resource names
     Type: String
@@ -50,14 +49,16 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        UserData: !Base64 |
-          apt-get update -y
-          sudo apt-get install nginx -y
-          service nginx start
-          cd /usr/share/nginx/html
-          echo "<html><head><title>Udacity DevOps ND</title></head><body><h1>It works! Udagram, Udacity</h1></body></html>" > index.html
-          sudo systemctl restart nginx
-        ImageId: ami-0557a15b87f6559cf
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo apt-get update
+            sudo apt-get install nginx -y
+            sudo systemctl enable nginx
+            sudo systemctl start nginx
+            echo "<html><head><title>Udacity DevOps ND</title></head><body><h1>It works! Udagram, Udacity</h1></body></html>" > index.html
+            sudo cp index.html /var/www/html/
+        ImageId: ami-06aa3f7caf3a30282
         SecurityGroupIds:
           - !Ref WebServerSecGroup
         InstanceType: t3.small
@@ -162,6 +163,8 @@ Resources:
       UnhealthyThresholdCount: 5
       VpcId: !ImportValue
         Fn::Sub: ${EnvironmentName}-VPCID
+    DependsOn:
+      - WebAppLB
 
   S3Bucket:
     Type: AWS::S3::Bucket
@@ -188,5 +191,3 @@ Outputs:
   LoadBalancerURL:
     Description: Public URL of the LoadBalancer
     Value: !Sub "http://${WebAppLB.DNSName}"
-
-

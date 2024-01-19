@@ -18,6 +18,8 @@ arn:aws:cloudformation:us-east-1:911410071625:stack/netwwork-stack/c2b9d270-b69e
 
 arn:aws:cloudformation:us-east-1:911410071625:stack/network-stack/1f77aa30-b6a1-11ee-828e-0ab336d6fcf7
 
-## S3 URL:
 
-https://s3.us-east-1.amazonaws.com/cf-templates-1414ajwcc5g7p-us-east-1/2024-01-18T123614.723Z8mf-udagram.yml
+
+## lb url
+
+http://udagra-webap-qa8dkwoomb6a-2036383227.us-east-1.elb.amazonaws.com/
