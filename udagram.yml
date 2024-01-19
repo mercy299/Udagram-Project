@@ -5,36 +5,188 @@ Parameters:
   EnvironmentName:
     Description: An environment name that will be prefixed to resource names
     Type: String
-
-  VpcCIDR: 
-    Description: Please enter the IP range (CIDR notation) for this VPC
+  MyBucketName:
+    Description: My bucket
     Type: String
-    Default: 10.0.0.0/16
-
-
     
 Resources:
   # Add your resources here
   # We include a portion of the LaunchTemplate resource so you can use the UserData.
-  VPC: 
-    Type: AWS::EC2::VPC
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      CidrBlock: !Ref VpcCIDR
-      EnableDnsHostnames: true
-      Tags: 
-        - Key: Name 
-          Value: !Ref EnvironmentName
-      
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
+      GroupDescription: Allow http access to our load balancer
+      VpcId: !ImportValue
+        Fn::Sub: ${EnvironmentName}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      Tags:
-        - Key: Name
-          Value: !Ref EnvironmentName
-      
-  InternetGatewayAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
+      GroupDescription: Allow http access to our hosts from the LB Security Group
+      VpcId: !ImportValue
+        Fn::Sub: ${EnvironmentName}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LBSecGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  WebAppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Properties:
-      InternetGatewayId: !Ref InternetGateway
-      VpcId: !Ref VPC
+      LaunchTemplateData:
+        UserData: !Base64 |
+          apt-get update -y
+          sudo apt-get install nginx -y
+          service nginx start
+          cd /usr/share/nginx/html
+          echo "<html><head><title>Udacity DevOps ND</title></head><body><h1>It works! Udagram, Udacity</h1></body></html>" > index.html
+          sudo systemctl restart nginx
+        ImageId: ami-0557a15b87f6559cf
+        SecurityGroupIds:
+          - !Ref WebServerSecGroup
+        InstanceType: t3.small
+        BlockDeviceMappings:
+          - DeviceName: /dev/sdk
+            Ebs:
+              VolumeSize: '10'
+        IamInstanceProfile:
+          Name: !Ref WebAppInstanceProfile
+
+  WebAppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}-web-servers"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: s3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3Bucket}/*"
+
+  WebAppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref WebAppInstanceRole
+
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue
+          Fn::Sub: ${EnvironmentName}-PRIV-NETS
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebAppLaunchTemplate
+        Version: !GetAtt WebAppLaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      DesiredCapacity: '1'
+      MaxSize: '3'
+      TargetGroupARNs:
+        - !Ref WebAppTargetGroup
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !ImportValue
+          Fn::Sub: ${EnvironmentName}-PUB1-SN
+        - !ImportValue
+          Fn::Sub: ${EnvironmentName}-PUB2-SN
+      SecurityGroups:
+        - !Ref LBSecGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref WebAppLB
+      Port: '80'
+      Protocol: HTTP
+
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref Listener
+      Priority: 1
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !ImportValue
+        Fn::Sub: ${EnvironmentName}-VPCID
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${MyBucketName}"
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Status: "Enabled"
+            NoncurrentVersionExpirationInDays: 10
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+Outputs:
+  LoadBalancerURL:
+    Description: Public URL of the LoadBalancer
+    Value: !Sub "http://${WebAppLB.DNSName}"
+
 
